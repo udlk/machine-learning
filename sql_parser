@@ -1,0 +1,176 @@
+import re
+import os
+import pandas as pd
+
+
+def extract_tables_and_columns(sql, file_name):
+    tables = {}
+
+    # Split the SQL into individual statements with line numbers
+    statements = [(idx + 1, stmt.strip()) for idx, stmt in enumerate(sql.strip().split(';')) if stmt.strip()]
+
+    for line_number, statement in statements:
+        print(f"Parsing statement from {file_name} on line {line_number}: {statement}")  # Debug: current SQL statement
+
+        # Extract columns from the SELECT clause
+        select_match = re.search(r'SELECT\s+(.*?)\s+FROM', statement, re.IGNORECASE)
+        if select_match:
+            columns_part = select_match.group(1).strip()
+            columns = [col.strip() for col in re.split(r',\s*', columns_part)]
+            print(f"Found columns part: {columns}")  # Debug: extracted columns part
+
+            # Extract tables from FROM and JOIN clauses
+            alias_mapping = {}  # Dictionary to hold alias mappings
+
+            # Extract FROM and JOIN tables
+            from_part = re.search(r'FROM\s+(.*?)(\s+WHERE|\s+JOIN|$)', statement, re.IGNORECASE)
+            if from_part:
+                from_tables = from_part.group(1).strip()
+                print(f"Found FROM tables: {from_tables}")  # Debug: found from tables
+
+                for table in re.split(r',\s*|\s+JOIN\s+', from_tables):
+                    table = table.strip()
+                    schema = 'N/A'
+                    if '.' in table:
+                        schema, table_name = table.split('.', 1)
+                    else:
+                        table_name = table
+
+                    alias = None
+                    if ' ' in table_name:
+                        table_name_parts = table_name.split()
+                        table_name = table_name_parts[0]
+                        alias = table_name_parts[1] if len(table_name_parts) > 1 else None
+
+                    # Initialize the table if not present
+                    if table_name not in tables:
+                        tables[table_name] = {'schema': schema, 'columns': set(), 'statements': set()}
+
+                    if alias:
+                        alias_mapping[alias] = table_name
+
+            # Extract JOIN tables
+            join_tables = re.findall(r'JOIN\s+([^\s]+)\s*(AS\s+)?([a-zA-Z0-9_]+)?', statement, re.IGNORECASE)
+            for join in join_tables:
+                join_table = join[0].strip()
+                join_alias = join[2].strip() if join[2] else None
+                schema = 'N/A'
+                if '.' in join_table:
+                    schema, join_table = join_table.split('.', 1)
+
+                if join_table not in tables:
+                    tables[join_table] = {'schema': schema, 'columns': set(), 'statements': set()}
+
+                if join_alias:
+                    alias_mapping[join_alias] = join_table
+
+                print(f"Found JOIN table: {join_table} with alias: {join_alias}")  # Debug: found join table
+
+            # Map columns from the SELECT clause
+            for col in columns:
+                matched = False
+                if '.' in col:
+                    prefix, column_name = col.split('.', 1)
+                    if prefix in alias_mapping:
+                        table_name = alias_mapping[prefix]
+                        # Check for existing column before adding
+                        if column_name not in tables[table_name]['columns']:
+                            tables[table_name]['columns'].add(col)
+                            tables[table_name]['statements'].add((line_number, statement, file_name))
+                            print(f"Mapping column {col} to table {table_name} using alias {prefix}")  # Debug
+                            matched = True
+                    elif prefix in tables:
+                        # Check for existing column before adding
+                        if column_name not in tables[prefix]['columns']:
+                            tables[prefix]['columns'].add(col)
+                            tables[prefix]['statements'].add((line_number, statement, file_name))
+                            print(f"Mapping column {col} to table {prefix}")  # Debug
+                            matched = True
+
+                if not matched:
+                    # Add unqualified column to the last table found
+                    if alias_mapping:
+                        last_table_name = list(alias_mapping.values())[-1]
+                        # Check for existing column before adding
+                        if column_name not in tables[last_table_name]['columns']:
+                            tables[last_table_name]['columns'].add(col)
+                            tables[last_table_name]['statements'].add((line_number, statement, file_name))
+                            print(f"Adding unqualified column {col} to {last_table_name}")  # Debug
+
+            # Extract ON conditions and map columns accordingly
+            on_conditions = re.findall(r'ON\s+(.*?)\s*(?:WHERE|JOIN|$)', statement, re.IGNORECASE)
+            for on_condition in on_conditions:
+                conditions = [cond.strip() for cond in re.split(r'AND', on_condition)]
+                for condition in conditions:
+                    if '=' in condition:
+                        left_column, right_column = condition.split('=')
+                        left_column, right_column = left_column.strip(), right_column.strip()
+
+                        def map_column_to_table(column):
+                            if '.' in column:
+                                prefix, _ = column.split('.', 1)
+                                if prefix in alias_mapping:
+                                    table_name = alias_mapping[prefix]
+                                    # Check for existing column before adding
+                                    if column not in tables[table_name]['columns']:
+                                        tables[table_name]['columns'].add(column)
+                                        tables[table_name]['statements'].add((line_number, statement, file_name))
+                                        print(
+                                            f"Mapping column {column} to table {table_name} using alias {prefix}")  # Debug
+                                elif prefix in tables:
+                                    # Check for existing column before adding
+                                    if column not in tables[prefix]['columns']:
+                                        tables[prefix]['columns'].add(column)
+                                        tables[prefix]['statements'].add((line_number, statement, file_name))
+                                        print(f"Mapping column {column} to table {prefix}")  # Debug
+
+                        map_column_to_table(left_column)
+                        map_column_to_table(right_column)
+
+    return tables
+
+
+def process_sql_files(file_paths):
+    all_tables = {}
+    for file_path in file_paths:
+        print(f"Parsing SQL file: {file_path}")  # Debug: current SQL file
+        with open(file_path, 'r') as file:
+            sql_content = file.read()
+            tables = extract_tables_and_columns(sql_content, os.path.basename(file_path))
+            all_tables.update(tables)
+
+    return all_tables
+
+
+def write_to_excel(tables):
+    # Prepare data for DataFrame
+    data = []
+    for table_name, table_info in tables.items():
+        schema = table_info['schema']
+        for column in table_info['columns']:
+            # Retrieve the statement(s) where the column is found
+            for statement in table_info['statements']:
+                data.append([schema, table_name, column, statement[1], statement[0], statement[2]])
+
+    df = pd.DataFrame(data, columns=['Schema', 'Table', 'Column', 'SQL Statement', 'Line Number', 'File Name'])
+
+    # Drop duplicates
+    df.drop_duplicates(inplace=True)
+
+    # Write to Excel
+    output_file = 'output_multiple_files.xlsx'
+    df.to_excel(output_file, index=False)
+    print(f"Data written to {output_file}")
+
+
+def main():
+    input_folder = 'input'  # Specify your input folder here
+    sql_files = [os.path.join(input_folder, file) for file in os.listdir(input_folder) if file.endswith('.sql')]
+
+    tables = process_sql_files(sql_files)
+    write_to_excel(tables)
+    print("Processing completed.")
+
+
+if __name__ == "__main__":
+    main()
