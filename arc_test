@@ -1,0 +1,59 @@
+import os
+import shutil
+import zipfile
+from datetime import datetime
+
+
+# Function to set the working directory and create archive folder and zip it with timestamped files
+def create_archive_with_timestamp(file_names, working_directory=None):
+    # If a working directory is provided, change to that directory
+    if working_directory:
+        os.chdir(working_directory)
+
+    # Get the current date in YYYYMMDD format
+    current_date = datetime.now().strftime('%Y%m%d')
+
+    # Create a folder named with the current date
+    archive_folder = os.path.join(os.getcwd(), current_date)
+
+    # Create the folder if it doesn't exist
+    if not os.path.exists(archive_folder):
+        os.makedirs(archive_folder)
+
+    # Get the current timestamp for file naming
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    # Create copies of files with timestamp in the new folder
+    for file_name in file_names:
+        if os.path.exists(file_name):
+            # Extract base name and extension of the file
+            base_name = os.path.basename(file_name)
+            new_file_name = f"{os.path.splitext(base_name)[0]}_{timestamp}{os.path.splitext(base_name)[1]}"
+            archive_file_path = os.path.join(archive_folder, new_file_name)
+
+            # Copy the file to the archive folder with a new timestamped name
+            shutil.copy2(file_name, archive_file_path)
+        else:
+            print(f"File not found: {file_name}")
+
+    # Zip the entire archive folder
+    zip_file_path = os.path.join(os.getcwd(), f"{current_date}.zip")
+
+    with zipfile.ZipFile(zip_file_path, 'w') as zipf:
+        for root, _, files in os.walk(archive_folder):
+            for file in files:
+                zipf.write(os.path.join(root, file), arcname=os.path.join(current_date, file))
+
+    print(f"Archive created and zipped: {zip_file_path}")
+
+
+# function call
+if __name__ == "__main__":
+    # list of files to be archived
+    file_list = ['final_output.xlsx', 'output.xlsx']  # Replace with actual files in your directory
+
+    # Set a custom working directory (optional)
+    working_dir = '/Users/uddalakmandal/PycharmProjects/sqpparser/'  # Replace with your path or set to None
+
+    # Call the function to create archive and zip
+    create_archive_with_timestamp(file_list, working_dir)
