@@ -1,156 +1,84 @@
-import logging
-from pyhive import hive
+import os
+import subprocess
 import pandas as pd
-from pyspark.sql import SparkSession
-import requests
-import json
+import logging
 
 # Configuration
-HIVE_HOST = 'your_hive_host'
-HIVE_PORT = 10000
-HIVE_USERNAME = 'your_hive_username'
+input_file = "input.txt"  # Change this to your actual input file
+output_folder = "executed_outputs"
+merged_output_file = "merged_output.csv"
+commands_log_file = "executed_commands.txt"
+os.makedirs(output_folder, exist_ok=True)
 
-DATABRICKS_WORKSPACE_URL = 'https://<your-databricks-workspace-url>'
-DATABRICKS_TOKEN = 'your-databricks-token'
-CATALOG_NAME = 'your_unity_catalog_name'
-SPARK_APP_NAME = 'HiveToUnityCatalogMigration'
-
-# Set up logging
+# Setup logging
 logging.basicConfig(
-    filename='migration.log',
+    filename="script.log",
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger()
 
-# Establish Hive connection
-def connect_to_hive():
-    try:
-        return hive.Connection(
-            host=HIVE_HOST,
-            port=HIVE_PORT,
-            username=HIVE_USERNAME
-        )
-    except Exception as e:
-        logger.error(f"Error connecting to Hive: {e}")
-        raise
-
-# Get all Hive databases
-def get_all_databases(cursor):
-    try:
-        cursor.execute("SHOW DATABASES")
-        return cursor.fetchall()
-    except Exception as e:
-        logger.error(f"Error retrieving databases from Hive: {e}")
-        raise
-
-# Get all tables in a Hive database
-def get_hive_tables(cursor, database_name):
-    try:
-        cursor.execute(f"USE {database_name}")
-        cursor.execute("SHOW TABLES")
-        return cursor.fetchall()
-    except Exception as e:
-        logger.error(f"Error retrieving tables from Hive database '{database_name}': {e}")
-        raise
-
-# Create a catalog in Unity Catalog using Databricks REST API
-def create_catalog(catalog_name):
-    try:
-        url = f"{DATABRICKS_WORKSPACE_URL}/api/2.0/unity-catalog/catalogs"
-        headers = {"Authorization": f"Bearer {DATABRICKS_TOKEN}"}
-        data = {
-            "name": catalog_name,
-            "comment": "Migrated from Hive"
-        }
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200:
-            logger.info(f"Catalog '{catalog_name}' created successfully.")
-        else:
-            logger.error(f"Error creating catalog '{catalog_name}': {response.content}")
-    except Exception as e:
-        logger.error(f"Error creating catalog '{catalog_name}': {e}")
-        raise
-
-# Create schema in Unity Catalog using Databricks REST API
-def create_schema(schema_name, catalog_name):
-    try:
-        url = f"{DATABRICKS_WORKSPACE_URL}/api/2.0/unity-catalog/schemas"
-        headers = {"Authorization": f"Bearer {DATABRICKS_TOKEN}"}
-        data = {
-            "name": schema_name,
-            "catalog_name": catalog_name,
-            "comment": "Migrated from Hive"
-        }
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 200:
-            logger.info(f"Schema '{schema_name}' created successfully in catalog '{catalog_name}'.")
-        else:
-            logger.error(f"Error creating schema '{schema_name}': {response.content}")
-    except Exception as e:
-        logger.error(f"Error creating schema '{schema_name}': {e}")
-        raise
-
-# Use Spark to transfer data from Hive to Unity Catalog
-def migrate_table_to_unity_catalog(spark, hive_database, hive_table, catalog_name, schema_name):
-    try:
-        # Load data from Hive table
-        hive_table_df = spark.sql(f"SELECT * FROM {hive_database}.{hive_table}")
-
-        # Write data to Unity Catalog
-        hive_table_df.write.mode("overwrite").saveAsTable(f"{catalog_name}.{schema_name}.{hive_table}")
-
-        logger.info(f"Table '{hive_table}' successfully migrated from Hive to Unity Catalog.")
-    except Exception as e:
-        logger.error(f"Error migrating table '{hive_table}' from database '{hive_database}': {e}")
-        raise
-
-# Main script
-def main():
-    try:
-        # Connect to Hive
-        hive_conn = connect_to_hive()
-        hive_cursor = hive_conn.cursor()
-
-        # Get all databases from Hive
-        databases = get_all_databases(hive_cursor)
-
-        # Create Unity Catalog
-        create_catalog(CATALOG_NAME)
-
-        # Initialize Spark session
-        spark = SparkSession.builder.appName(SPARK_APP_NAME).getOrCreate()
-
-        # Loop through each Hive database and migrate tables
-        for (hive_database_name,) in databases:
+try:
+    # Read the input file
+    with open(input_file, "r") as file:
+        lines = file.readlines()
+    
+    # Save all commands to a file
+    with open(commands_log_file, "w") as cmd_log:
+        # Process each line
+        for index, line in enumerate(lines):
+            parts = line.strip().split(",")  # Assuming CSV format
+            if len(parts) != 4:
+                logging.warning(f"Skipping invalid line {index + 1}: {line}")
+                continue
+            
+            case_number, ssn, begin_date, end_date = parts
+            command = (
+                f"python report.py -job_name='hist' "
+                f"-case_number='{case_number}' -ssn='{ssn}' "
+                f"-begin_date='{begin_date}' -end_date='{end_date}'"
+            )
+            
+            # Write command to log file
+            cmd_log.write(command + "\n")
+            
+            # Define output file
+            output_file = os.path.join(output_folder, f"output_{index + 1}.csv")
+            
+            # Execute the command and save output
+            logging.info(f"Executing: {command}")
             try:
-                # Create schema for each database in Unity Catalog
-                create_schema(hive_database_name, CATALOG_NAME)
+                result = subprocess.run(command, shell=True, capture_output=True, text=True)
+                with open(output_file, "w") as out_file:
+                    out_file.write(result.stdout)
+                
+                if result.stderr:
+                    logging.warning(f"Command stderr for line {index + 1}: {result.stderr}")
+                    
+            except Exception as e:
+                logging.error(f"Error executing command for line {index + 1}: {e}")
 
-                # Get tables from the current Hive database
-                tables = get_hive_tables(hive_cursor, hive_database_name)
-
-                # Migrate each table from the current Hive database to Unity Catalog
-                for table_name, _ in tables:
-                    try:
-                        migrate_table_to_unity_catalog(spark, hive_database_name, table_name, CATALOG_NAME, hive_database_name)
-                    except Exception as table_error:
-                        logger.error(f"Failed to migrate table '{table_name}' in database '{hive_database_name}': {table_error}")
-            except Exception as db_error:
-                logger.error(f"Failed to process Hive database '{hive_database_name}': {db_error}")
-
-    except Exception as e:
-        logger.critical(f"Critical failure during migration process: {e}")
-    finally:
+    # Merge all CSV files into a single CSV with a single header
+    csv_files = [os.path.join(output_folder, f) for f in os.listdir(output_folder) if f.endswith(".csv")]
+    
+    if csv_files:
         try:
-            # Close connections
-            if hive_cursor:
-                hive_cursor.close()
-            if hive_conn:
-                hive_conn.close()
-            logger.info("Hive connection closed.")
+            dataframes = []
+            for file in csv_files:
+                try:
+                    df = pd.read_csv(file)
+                    if not df.empty:
+                        dataframes.append(df)
+                except Exception as e:
+                    logging.warning(f"Skipping file {file} due to read error: {e}")
+            
+            if dataframes:
+                merged_df = pd.concat(dataframes, ignore_index=True)
+                merged_df.to_csv(merged_output_file, index=False)
+                logging.info(f"Merged CSV saved as {merged_output_file}")
+            else:
+                logging.warning("No valid CSV files found for merging.")
         except Exception as e:
-            logger.error(f"Error closing Hive connection: {e}")
+            logging.error(f"Error merging CSV files: {e}")
 
-if __name__ == "__main__":
-    main()
+except Exception as e:
+    logging.critical(f"Script failed: {e}")
