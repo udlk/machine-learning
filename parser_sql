@@ -1,4 +1,51 @@
 import os
+import multiprocessing
+import subprocess
+import psutil  # For checking available CPU cores
+
+def get_available_cpus():
+    """Returns available (not just total) CPU count"""
+    return min(os.cpu_count(), psutil.cpu_count(logical=False))  # Use physical cores to avoid overloading
+
+def run_command(command):
+    """Runs a shell command with error handling"""
+    try:
+        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate()
+        
+        if process.returncode == 0:
+            print(f"Success: {command}")
+        else:
+            print(f"Failed: {command}\nError: {stderr.decode()}")
+    except Exception as e:
+        print(f"Error running command: {command}\n{str(e)}")
+
+if __name__ == "__main__":
+    with open("commands.txt", "r") as f:
+        commands = [line.strip() for line in f.readlines()]
+
+    num_workers = min(100, get_available_cpus())  # Dynamically adjust workers
+    print(f"Running {len(commands)} commands with {num_workers} parallel workers...\n")
+
+    with multiprocessing.Pool(num_workers) as pool:
+        pool.map(run_command, commands)  # Execute commands in parallel
+
+    print("All commands executed!")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import os
 import re
 import pandas as pd
 
