@@ -1,6 +1,70 @@
 import os
 import multiprocessing
 import subprocess
+import socket
+import psutil
+
+def run_command(command):
+    """Runs a shell command with error handling"""
+    try:
+        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate()
+
+        if process.returncode == 0:
+            print(f"Success: {command}")
+        else:
+            print(f"Failed: {command}\nError: {stderr.decode()}")
+    except Exception as e:
+        print(f"Error running command: {command}\n{str(e)}")
+
+def get_available_cpus():
+    """Returns available CPU count"""
+    return os.cpu_count()
+
+def get_available_memory():
+    """Returns available memory in GB"""
+    return psutil.virtual_memory().available / (1024 ** 3)  # Convert bytes to GB
+
+if __name__ == "__main__":
+    # Get pod index from hostname (Kubernetes sets this)
+    pod_index = int(socket.gethostname().split("-")[-1])  # Extract number from pod name
+
+    # Read commands and distribute workload across replicas
+    with open("/app/commands.txt", "r") as f:
+        commands = [line.strip() for line in f.readlines()]
+
+    total_replicas = int(os.getenv("TOTAL_REPLICAS", 10))  # Default 10 replicas
+    chunk_size = len(commands) // total_replicas
+    start = pod_index * chunk_size
+    end = start + chunk_size if pod_index < total_replicas - 1 else len(commands)
+
+    pod_commands = commands[start:end]  # Assign part of the work to this pod
+
+    print(f"Pod {pod_index} executing {len(pod_commands)} commands")
+
+    # Get available resources
+    available_memory = get_available_memory()
+    available_cpus = get_available_cpus()
+
+    # Set parallel workers: 2-3x CPU count, but adjust for memory
+    num_workers = min(available_cpus * 3, 96)  # Limit workers to 96 as a max
+    # Reduce workers if memory is a constraint
+    if available_memory < 4:
+        num_workers = available_cpus  # One process per CPU
+
+    print(f"Running {len(pod_commands)} commands with {num_workers} parallel workers...\n")
+
+    # Run the commands in parallel using multiprocessing
+    with multiprocessing.Pool(num_workers) as pool:
+        pool.map(run_command, pod_commands)  # Execute commands in parallel
+
+    print(f"Pod {pod_index} execution complete")
+
+
+
+import os
+import multiprocessing
+import subprocess
 import psutil
 
 def get_available_cpus():
