@@ -1,3 +1,89 @@
+Approach,Description,Pros,Cons,Best Use Case
+"Current Approach (Optimized Multiprocessing in Kubernetes Pods)","Splits command list across Kubernetes pods, utilizes multiprocessing for parallel execution, and adjusts workers based on system resources.","✅ Efficient workload distribution; ✅ Dynamically adjusts workers based on available CPUs & memory; ✅ Scales well with multiple pods; ✅ Prevents memory overload by adjusting worker count; ✅ Handles errors gracefully","❌ Requires a well-structured pod naming convention; ❌ Limited by how evenly commands are distributed across pods","Large-scale distributed command execution where system resources vary per node"
+"Single-Pod Execution (No Distribution Across Pods)","Runs all commands within a single pod using multiprocessing without splitting the workload.","✅ Simpler setup; ✅ No dependency on Kubernetes pod indexing; ✅ Still benefits from multiprocessing","❌ Doesn't leverage multiple pods efficiently; ❌ Can overload a single node if the command list is too large","Small-scale executions where only one instance of the container is running"
+"Thread-Based Execution (Using concurrent.futures.ThreadPoolExecutor)","Uses threads instead of processes to run commands concurrently within a pod.","✅ Lower memory overhead than multiprocessing; ✅ Suitable for I/O-bound tasks (e.g., network requests)","❌ Python's Global Interpreter Lock (GIL) can limit CPU-bound task performance; ❌ Not efficient for CPU-intensive tasks like heavy computation","I/O-heavy workloads where threading benefits apply"
+"Distributed Task Queue (Using Celery + Redis or RabbitMQ)","Uses a task queue like Celery to distribute commands dynamically across worker nodes, allowing better resource allocation.","✅ More dynamic than static pod-based distribution; ✅ Can scale elastically based on real-time load; ✅ Provides better monitoring and retry mechanisms","❌ Requires a message broker setup (Redis/RabbitMQ); ❌ More complex than direct multiprocessing; ❌ Adds latency due to message queuing","Large-scale dynamic workloads where fault tolerance, retries, and scaling are important"
+"Kubernetes Job Controller","Uses Kubernetes Jobs instead of static pod distribution. Each job processes a set of commands dynamically.","✅ More resilient to failures than static pods; ✅ Automatically manages pod scaling; ✅ Ideal for batch processing","❌ More Kubernetes overhead than simple pods; ❌ Requires job scheduling configuration; ❌ Not as fast as direct multiprocessing","Large batch processing tasks where automatic retry and failover are needed"
+"Best Approach Based on Use Case","If you need fast parallel execution with Kubernetes pods: ✅ Current Approach (Multiprocessing with pod distribution); If running in a single container or local environment: ✅ Single-Pod Multiprocessing; If dealing with network-bound (I/O) tasks: ✅ Thread-Based Execution; If scaling dynamically based on task load: ✅ Celery with Redis/RabbitMQ; If using Kubernetes and want automated job scheduling: ✅ Kubernetes Job Controller","For your case, since you are running commands in Kubernetes pods, the current approach is the best as it efficiently utilizes multiprocessing while ensuring balanced workload distribution. However, if you need dynamic scaling, consider Celery with Redis or a Kubernetes Job Controller. 🚀"
+
+
+
+import os
+import multiprocessing
+import subprocess
+import socket
+import psutil
+
+def run_command(command):
+    """Runs a shell command with error handling"""
+    try:
+        process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate()
+
+        if process.returncode == 0:
+            print(f"Success: {command}")
+        else:
+            print(f"Failed: {command}\nError: {stderr.decode()}")
+    except Exception as e:
+        print(f"Error running command: {command}\n{str(e)}")
+
+def get_available_cpus():
+    """Returns available CPU count"""
+    return os.cpu_count()
+
+def get_available_memory():
+    """Returns available memory in GB"""
+    return psutil.virtual_memory().available / (1024 ** 3)  # Convert bytes to GB
+
+if __name__ == "__main__":
+    # Get pod index from hostname (Kubernetes sets this)
+    try:
+        pod_index = int(socket.gethostname().split("-")[-1])  # Extract number from pod name
+    except (IndexError, ValueError):
+        pod_index = 0  # Default to 0 if hostname format is unexpected
+
+    # Read commands and distribute workload across replicas
+    with open("/app/commands.txt", "r") as f:
+        commands = [line.strip() for line in f.readlines() if line.strip()]
+
+    total_replicas = max(1, int(os.getenv("TOTAL_REPLICAS", 1)))  # Ensure at least 1 replica
+    num_commands = len(commands)
+    
+    if num_commands == 0:
+        print("No commands found. Exiting.")
+        exit(0)
+
+    # Ensure at least one command per pod if commands < replicas
+    chunk_size = max(1, num_commands // total_replicas)
+    start = pod_index * chunk_size
+    end = min(start + chunk_size, num_commands) if pod_index < total_replicas - 1 else num_commands
+
+    pod_commands = commands[start:end]  # Assign part of the work to this pod
+
+    print(f"Pod {pod_index} executing {len(pod_commands)} commands")
+
+    # Get available resources
+    available_memory = get_available_memory()
+    available_cpus = get_available_cpus()
+
+    # Set parallel workers: 2-3x CPU count, but adjust for memory
+    num_workers = min(available_cpus * 3, 96)  # Limit workers to 96 as a max
+    # Reduce workers if memory is a constraint
+    if available_memory < 4:
+        num_workers = available_cpus  # One process per CPU
+    if available_memory < 2:
+        num_workers = max(1, available_cpus // 2)  # Further reduce workers for low memory
+
+    print(f"Running {len(pod_commands)} commands with {num_workers} parallel workers...\n")
+
+    # Run the commands in parallel using multiprocessing
+    with multiprocessing.Pool(num_workers) as pool:
+        pool.map(run_command, pod_commands)  # Execute commands in parallel
+
+    print(f"Pod {pod_index} execution complete")
+
+
+
 import os
 import multiprocessing
 import subprocess
